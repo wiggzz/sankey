@@ -1,7 +1,7 @@
 # sankey
 App for displaying CSV files as a Sankey plot.
 
-**Usage
+##Usage
 It allows opening CSV files of the format:
 
     "Item A","Item A","Item A",10.0
