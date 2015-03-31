@@ -14,4 +14,6 @@ correspond to its own data item in that column.
 
 ###Demo
 
-http://wiggzz.github.io/sankey
+Download [this](http://wiggzz.github.io/sankey/demo.csv) csv file.
+
+Load it here: http://wiggzz.github.io/sankey
