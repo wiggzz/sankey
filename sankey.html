@@ -1,0 +1,840 @@
+<html>
+<head>
+<title>No Title</title>
+<script src="lib/d3.v3.min.js" charset="utf-8"></script>
+<script type="text/javascript">
+d3.sankey = function() {
+  var sankey = {},
+      nodeWidth = 24,
+      nodePadding = 8,
+      nodeSpacing = 100,
+      columns = [],
+      displayColumns = d3.set(),
+      size = [1, 1],
+      nodes = [],
+      links = [];
+
+  sankey.nodeWidth = function(_) {
+    if (!arguments.length) return nodeWidth;
+    nodeWidth = +_;
+    return sankey;
+  };
+
+  sankey.nodePadding = function(_) {
+    if (!arguments.length) return nodePadding;
+    nodePadding = +_;
+    return sankey;
+  };
+
+  sankey.nodeSpacing = function() {
+    return nodeSpacing;
+  }
+
+  sankey.columns = function() {
+    return columns;
+  }
+
+  sankey.displayColumns = function(_) {
+    if (!arguments.length) return displayColumns;
+    displayColumns = _;
+    return sankey;
+  }
+
+  sankey.nodes = function(_) {
+    if (!arguments.length) return nodes;
+    nodes = _;
+    return sankey;
+  };
+
+  sankey.links = function(_) {
+    if (!arguments.length) return links;
+    links = _;
+    return sankey;
+  };
+
+  sankey.size = function(_) {
+    if (!arguments.length) return size;
+    size = _;
+    return sankey;
+  };
+
+  sankey.assignColumns = function() {
+    computeNodeLinks();
+    computeNodeValues();
+    computeNodeBreadths();
+  }
+
+  sankey.layout = function(iterations) {
+    sankey.assignColumns();
+    computeNodeDepths(iterations);
+    computeLinkDepths();
+    return sankey;
+  };
+
+  sankey.softLayout = function() {
+    initializeNodeDepths(getNodesByBreadth(nodes));
+    computeLinkDepths();
+  }
+
+  sankey.relayout = function() {
+    computeLinkDepths();
+    return sankey;
+  };
+
+  sankey.link = function() {
+    var curvature = .5;
+
+    function link(d) {
+      var x0 = d.source.x + d.source.dx,
+          x1 = d.target.x,
+          xi = d3.interpolateNumber(x0, x1),
+          x2 = xi(curvature),
+          x3 = xi(1 - curvature),
+          y0 = d.source.y + d.sy + d.dy / 2,
+          y1 = d.target.y + d.ty + d.dy / 2;
+      return "M" + x0 + "," + y0
+           + "C" + x2 + "," + y0
+           + " " + x3 + "," + y1
+           + " " + x1 + "," + y1;
+    }
+
+    link.curvature = function(_) {
+      if (!arguments.length) return curvature;
+      curvature = +_;
+      return link;
+    };
+
+    return link;
+  };
+
+  // Populate the sourceLinks and targetLinks for each node.
+  // Also, if the source and target are not objects, assume they are indices.
+  function computeNodeLinks() {
+    nodes.forEach(function(node) {
+      node.sourceLinks = [];
+      node.targetLinks = [];
+    });
+    links.forEach(function(link) {
+      var source = link.source,
+          target = link.target;
+      if (typeof source === "number") source = link.source = nodes[link.source];
+      if (typeof target === "number") target = link.target = nodes[link.target];
+      source.sourceLinks.push(link);
+      target.targetLinks.push(link);
+    });
+  }
+
+  // Compute the value (size) of each node by summing the associated links.
+  function computeNodeValues() {
+    nodes.forEach(function(node) {
+      node.value = Math.max(
+        d3.sum(node.sourceLinks, value),
+        d3.sum(node.targetLinks, value)
+      );
+    });
+  }
+
+  // Iteratively assign the breadth (x-position) for each node.
+  // Nodes are assigned the maximum breadth of incoming neighbors plus one;
+  // nodes with no incoming links are assigned breadth zero, while
+  // nodes with no outgoing links are assigned the maximum breadth.
+  function computeNodeBreadths() {
+    var remainingNodes = nodes,
+        nextNodes,
+        col = 0;
+
+    columns = [];
+
+    while (remainingNodes.length) {
+      nextNodes = [];
+      remainingNodes.forEach(function(node) {
+        node.col = col;
+        node.dx = nodeWidth;
+        node.sourceLinks.forEach(function(link) {
+          if (nextNodes.indexOf(link.target) < 0) {
+            nextNodes.push(link.target);
+          }
+        });
+      });
+      remainingNodes = nextNodes;
+      columns.push(col);
+      ++col;
+    }
+
+    //
+    displayColumns = d3.set(columns);
+    moveSinksRight(col);
+    nodeSpacing = (size[0] - nodeWidth - 2) / (col - 1)
+    positionNodeColumns(nodes);
+  }
+
+  function moveSourcesRight() {
+    nodes.forEach(function(node) {
+      if (!node.targetLinks.length) {
+        node.col = d3.min(node.sourceLinks, function(d) { return d.target.col; }) - 1;
+      }
+    });
+  }
+
+  function moveSinksRight(col) {
+    nodes.forEach(function(node) {
+      if (!node.sourceLinks.length) {
+        node.col = col - 1;
+      }
+    });
+  }
+
+  function positionNodeColumns(nodes) {
+    nodeSpacing = (size[0] - nodeWidth - 2) / (displayColumns.size() -1);
+    var colMap = new Array(columns.length);
+    displayColumns.values().sort(function (a,b) {
+      return a-b;
+    }).forEach(function(c,index) {
+      colMap[c] = index;
+    })
+    nodes.forEach(function(node) {
+      node.x = colMap[node.col] * nodeSpacing;
+    });
+  }
+
+  function getNodesByBreadth(nodes) {
+    return d3.nest()
+        .key(function(d) { return d.col; })
+        .sortKeys(d3.ascending)
+        .sortValues(ascendingDepth)
+        .entries(nodes)
+        .map(function(d) { return d.values; });
+  }
+
+  function initializeNodeDepths(nodesByBreadth, centerVertically) {
+    // positions the ordered nodesByBreadth in their columns
+    if (arguments.length<2) {
+      centerVertically = true;
+    }
+    // figure out what our scaling should be
+    // it is the total available space divided by the total values
+
+    var depthScaling = d3.min(nodesByBreadth, function(nodes) {
+      return (size[1] - (nodes.length + 1) * nodePadding) / d3.sum(nodes, value);
+    });
+
+    var paddingByBreadth = new Array(columns.length);
+    nodesByBreadth.forEach(function(nodes, col) {
+      paddingByBreadth[col] = (size[1] - d3.sum(nodes, function(d) {return d.value * depthScaling;})) /
+        (nodes.length + 1);
+    });
+
+    // now place nodes in a row starting from top
+    nodesByBreadth.forEach(function(nodes, col) {
+      var y = centerVertically ? paddingByBreadth[col]/2.0 : 0;
+      nodes.forEach(function(node, i) {
+        node.y = y;
+        node.dy = node.value * depthScaling;
+        node.dy = node.dy >= 1 ? node.dy : 1;
+        if (centerVertically) {
+          y += node.dy + paddingByBreadth[col];
+        } else {
+          y += node.dy + nodePadding;
+        }
+      });
+    });
+
+    links.forEach(function(link) {
+      link.dy = link.value * depthScaling;
+    });
+  }
+
+  function computeNodeDepths(iterations) {
+    var nodesByBreadth = getNodesByBreadth(nodes);
+
+    var sortType = {
+      byCrossover: {
+        total: totalCrossovers,
+        checker: shouldSwapByCrossovers
+      },
+      byDistance: {
+        total: totalDistance,
+        checker: shouldSwapByDistance
+      }
+    };
+
+    guessingPositionOptimizer(iterations, sortType.byDistance);
+
+
+    function guessingPositionOptimizer(count, sortMethod) {
+      var bestPositions;
+      var bestScore = 1e99;
+      for (var i=0;i<count;i++) {
+        nodesByBreadth.forEach(randomSort);
+        initializeNodeDepths(nodesByBreadth);
+        sortNodes(sortMethod,20);
+        var dist = sortMethod.total();
+        if (dist < bestScore) {
+          console.log('New best total distance: ' + dist);
+          bestScore = dist;
+          bestPositions = nodePositions(nodes);
+        }
+      }
+      nodePositions(bestPositions);
+    }
+
+    function sortNodes(sortMethod,passes) {
+      var i = 0;
+      var sorted = false;
+      for (i = 0; i < passes && !sorted; i++) {
+        sorted = !sortPass(sortMethod);
+      }
+      console.log('Completed sorting in ' + i + ' out of ' + passes + ' passes.');
+    }
+
+    function nodePositions(nodes, positions) {
+      if (!positions) {
+        return nodes.map(function(d) {
+          return d.y;
+        });
+      } else {
+        nodes.forEach(function(d,index) {
+          d.y = positions[index];
+        });
+      }
+    }
+
+    function totalDistance() {
+      return d3.sum(nodes, function(d) {
+        return nodeDistance(d,0);
+      });
+    }
+
+    function totalCrossovers() {
+      return d3.sum(nodesByBreadth, function(nodes) {
+        var sum = 0;
+        for (var i=0;i<nodes.length;i++) {
+          for (var j=i+1;j<nodes.length;j++) {
+            // only check sourceLinks because otherwise we double count...
+            sum += sumBoth(nodes[i].sourceLinks, nodes[j].sourceLinks, function(l1, l2) {
+              return linkCrossed(l1.source.y, l2.source.y, l1.target.y, l2.target.y)?crossoverWeight(l1,l2):0;
+            });
+          }
+        }
+        return sum;
+      });
+    }
+
+    function crossoverWeight(l1,l2)
+    {
+      var min = 0.5;
+      return Math.pow(l1.value>min?l1.value:min*l2.value>min?l2.value:min,2.0);
+    }
+
+    function randomSort(nodes) {
+      for (var i = nodes.length-1; i > 1; i--) {
+        j = getRandomInt(0,i+1);
+        tmp = nodes[i];
+        nodes[i] = nodes[j];
+        nodes[j] = tmp;
+      }
+    }
+
+    // Returns a random integer between min (included) and max (excluded)
+    // Using Math.round() will give you a non-uniform distribution!
+    function getRandomInt(min, max) {
+      return Math.floor(Math.random() * (max - min)) + min;
+    }
+
+    function sortPass(sortMethod) {
+      // this performs a simple sort
+      // sort nodes by y
+      var swapCount = 0;
+      nodesByBreadth.forEach(function(nodes) {
+        nodes.sort(ascendingDepth);
+        for (var i = 0; i < nodes.length; i++) {
+          for (var j = i; j < nodes.length; j++) {
+            var betweens = nodes.slice(i+1,j);
+            if (sortMethod.checker(nodes[i],nodes[j],betweens)) {
+              swapNodePositions(nodes[i],nodes[j],betweens);
+              // we should actually swap them too in order to keep
+              // the ordering
+              var tmp = nodes[i];
+              nodes[i] = nodes[j];
+              nodes[j] = tmp;
+              swapCount++;
+            }
+          }
+        }
+      });
+      return swapCount;
+    }
+
+    function shouldSwapByDistance(a,b,betweens) {
+      // determine if these two nodes should be swapped
+      // based on whether if we swap them, their total distance to their linked
+      // nodes decreases
+      var current = nodeDistance(a,0) + nodeDistance(b,0) + d3.sum(betweens,function(d) {
+        return nodeDistance(d,0);
+      });
+      var da = amountToMoveIfSwapped(a,b);
+      var db = amountToMoveIfSwapped(b,a);
+      var dc = amountToShiftBetweens(a,b);
+      var predicted = nodeDistance(a, da) + nodeDistance(b, db) + d3.sum(betweens,function(d) {
+        return nodeDistance(d, dc);
+      });
+      return predicted < current;
+    }
+
+    function shouldSwapByCrossovers(a,b,betweens) {
+      var otherNodes = [b].concat(betweens);
+      var current = nodeCrossovers(a,0,otherNodes,otherNodes.map(function(){return 0;}));
+      if (current == 0) return false;
+      var da = amountToMoveIfSwapped(a,b);
+      var db = amountToMoveIfSwapped(b,a);
+      var dc = amountToShiftBetweens(a,b);
+      var predicted = nodeCrossovers(a,da,otherNodes,[db].concat(betweens.map(function() { return dc;})));
+      return predicted < current;
+    }
+
+    function nodeDistance(node, dy) {
+      var min = 0.5;
+      return d3.sum(node.sourceLinks, function(d) {
+          return distance(node.y+dy, d.target.y, d.value > min ? d.value : min);
+        }) +  d3.sum(node.targetLinks, function(d) {
+        return distance(d.source.y, node.y+dy, d.value > min ? d.value : min);
+      });
+    }
+
+    function nodeCrossovers(node, dy, others, dys) {
+      return d3.sum(others, function(other, index) {
+        return sumBoth(node.sourceLinks, other.sourceLinks, function(l1, l2) {
+          return linkCrossed(l1.source.y+dy, l2.source.y+dys[index], l1.target.y, l2.target.y)?crossoverWeight(l1,l2):0;
+        }) + sumBoth(node.targetLinks, other.targetLinks, function(l1, l2) {
+          return linkCrossed(l1.source.y, l2.source.y, l1.target.y+dy, l2.target.y+dys[index])?crossoverWeight(l1,l2):0;
+        });
+      });
+    }
+
+    function sumBoth(array1, array2, f) {
+      return d3.sum(array1, function(a) {
+        return d3.sum(array2, function(b) {
+          return f(a,b);
+        })
+      })
+    }
+
+    function linkCrossed(source1, source2, target1, target2) {
+      return (source1-source2)*(target1-target2)<0;
+    }
+
+    function distance(a, b, weight) {
+        return Math.pow(weight, 0.9) * Math.pow(a - b, 2.0);
+    }
+
+    function swapNodePositions(a,b,betweens) {
+      da = amountToMoveIfSwapped(a,b);
+      db = amountToMoveIfSwapped(b,a);
+      dc = amountToShiftBetweens(a,b);
+      a.y += da;
+      b.y += db;
+      betweens.forEach(function(node) { node.y += dc; });
+    }
+
+    function amountToMoveIfSwapped(a, b) {
+      return a.y > b.y ? b.y - a.y : b.y - a.y + b.dy - a.dy;
+    }
+
+    function amountToShiftBetweens(a, b) {
+      return a.y > b.y ? a.dy - b.dy : b.dy - a.dy;
+    }
+  }
+
+  function computeLinkDepths() {
+    nodes.forEach(function(node) {
+      node.sourceLinks.sort(ascendingTargetDepth);
+      node.targetLinks.sort(ascendingSourceDepth);
+    });
+    nodes.forEach(function(node) {
+      var sy = 0, ty = 0;
+      node.sourceLinks.forEach(function(link) {
+        link.sy = sy;
+        sy += link.dy;
+      });
+      node.targetLinks.forEach(function(link) {
+        link.ty = ty;
+        ty += link.dy;
+      });
+    });
+
+    function ascendingSourceDepth(a, b) {
+      return a.source.y - b.source.y;
+    }
+
+    function ascendingTargetDepth(a, b) {
+      return a.target.y - b.target.y;
+    }
+  }
+
+  function center(node) {
+    return node.y + node.dy / 2;
+  }
+
+  function value(link) {
+    return link.value;
+  }
+
+  function ascendingDepth(a,b) {
+    return a.y - b.y;
+  }
+
+  return sankey;
+};
+</script>
+<style>
+body {
+	font-family: sans-serif;
+	font-size: 9pt;
+}
+
+@media print {
+#controls {
+	display: none;
+}
+}
+
+#chart {
+  font-family: sans-serif;
+  font-size: 8pt;
+}
+
+.node rect {
+  cursor: move;
+  fill-opacity: .9;
+  shape-rendering: crispEdges;
+}
+
+.node text {
+  pointer-events: none;
+  text-shadow: 0 1px 0 #fff;
+}
+
+.link {
+  fill: none;
+  stroke: #000;
+  stroke-opacity: .2;
+}
+
+.link:hover {
+  stroke-opacity: .5;
+}
+</style>
+</head>
+<body>
+<div id="controls">
+  <input type='file' id='fileInput' onchange='loadFile();'>
+  Chart Height: <input type='number' id='heightInput' onchange='resize();' value="1200">
+  Chart Width: <input type='number' id='widthInput' onchange='resize();' value="1000"><br>
+  <div id="columnFilter"></div>
+</div>
+<div id="chart"></div>
+<script type="text/javascript">
+var margin = {top: 1, right: 1, bottom: 6, left: 1},
+    width = 1000 - margin.left - margin.right,
+    height = 1200 - margin.top - margin.bottom;
+
+var formatNumber = d3.format(",.0f"),
+    format = function(d) { return "$" + formatNumber(d); },
+    color = d3.scale.category20();
+
+String.prototype.hashCode = function() {
+      var hash = 0, i, chr, len;
+      if (this.length == 0) return hash;
+      for (i = 0, len = this.length; i < len; i++) {
+        chr   = this.charCodeAt(i);
+        hash  = ((hash << 5) - hash) + chr;
+        hash |= 0; // Convert to 32bit integer
+      }
+      return hash;
+    };
+
+for (var i=0;i<20;i++) {
+  color(i);
+}
+
+var svg = d3.select("#chart").append("svg")
+    .attr("width", width + margin.left + margin.right)
+    .attr("height", height + margin.top + margin.bottom)
+  .append("g")
+    .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+var sankey = d3.sankey()
+    .nodeWidth(15)
+    .nodePadding(10)
+    .size([width, height]);
+
+var path = sankey.link();
+
+var nodes,links, displayColumns, restorer;
+
+function loadData() {
+  if (nodes == null || links == null)
+    return;
+
+  sankey
+      .nodes(nodes)
+      .links(links)
+      .layout(40);
+}
+
+function render() {
+  svg.selectAll("*").remove();
+
+  var link = svg.append("g").selectAll(".link")
+      .data(sankey.links())
+    .enter().append("path")
+      .attr("class", "link")
+      .attr("d", path)
+      .attr("fill", "none")
+      .attr("stroke", "#000")
+      .attr("stroke-opacity", ".2")
+      .style("stroke-width", function(d) { return Math.max(1, d.dy); })
+      .sort(function(a, b) { return b.dy - a.dy; });
+
+  link.append("title")
+      .text(function(d) { return d.source.name + " to " + d.target.name + "\n" + format(d.value); });
+
+  var node = svg.append("g").selectAll(".node")
+      .data(sankey.nodes())
+    .enter().append("g")
+      .attr("class", "node")
+      .attr("transform", function(d) { return "translate(" + d.x + "," + d.y + ")"; })
+    .call(d3.behavior.drag()
+      .origin(function(d) { return d; })
+      .on("dragstart", function() { this.parentNode.appendChild(this); })
+      .on("drag", dragmove));
+
+  node.append("rect")
+      .attr("fill-opacity",".9")
+      .attr("shape-rendering","crispEdges")
+      .attr("height", function(d) { return d.dy; })
+      .attr("width", sankey.nodeWidth())
+      .style("fill", function(d) { return d.color = color(d.name.hashCode() % 20); })
+      .style("stroke", function(d) { return d3.rgb(d.color).darker(2); })
+    .append("title")
+      .text(function(d) { return d.name + "\n" + format(d.value); });
+
+  node.selectAll(".node-text")
+    .data(splitLines)
+    .enter().append("text")
+      .attr("x", -6)
+      .attr("y", function(d) { return d.y; })
+      .attr("dy", ".35em")
+      .attr("text-anchor", "end")
+      .attr("text-shadow", "0 1px 0 #fff")
+      .attr("font-family", "sans-serif")
+      .attr("font-size", "8pt")
+      .attr("transform", null)
+      .text(function(d) { return d.name; })
+    .filter(function(d) { return d.x < width / 2; })
+      .attr("x", 6 + sankey.nodeWidth())
+      .attr("text-anchor", "start");
+
+  function dragmove(d) {
+    d3.select(this).attr("transform", "translate(" + d.x + "," + (d.y = Math.max(0, Math.min(height - d.dy, d3.event.y))) + ")");
+    sankey.relayout();
+    link.attr("d", path);
+  }
+
+  function splitLines(d) {
+    var lines = d.name.split("\n").filter(function(line) {
+      return line.length;
+    });
+
+    var lineHeight = 10;
+    var totalHeight = lineHeight*lines.length;
+    var padding = (d.dy - totalHeight)/2;
+    var y = padding + lineHeight/2;
+
+    return lines.map(function(line,index,array) {
+      var displayNode = {
+        name: line,
+        x: d.x,
+        y: y
+      };
+      y += lineHeight;
+      return displayNode;
+    });
+  }
+}
+
+function toggleColumn() {
+  if (displayColumns.has(this.value) && !this.checked) {
+    displayColumns.remove(this.value);
+  } else if (!displayColumns.has(this.value) && this.checked)
+  {
+    displayColumns.add(this.value);
+  }
+  softLayout();
+}
+
+function resize() {
+  height = d3.select("#heightInput").property("value");
+  width = d3.select("#widthInput").property("value");
+  d3.select("svg").attr("height",height).attr("width",width);
+  sankey.size([width, height]);
+  softLayout();
+}
+
+function loadFile() {
+	files = d3.select("#fileInput").property("files");
+	fr = new FileReader();
+	fr.onload = receivedText;
+	fr.readAsText(files[0]);
+}
+
+function receivedText(e) {
+	rows = d3.csv.parseRows(e.target.result);
+
+	extractNodesAndLinks(function(i) {return true; });
+
+  loadData();
+
+  displayColumns = d3.set(sankey.columns());
+
+  restorer = positionRestorer().save(sankey);
+
+  render();
+
+  // display the column filter check box
+
+  d3.select("#columnFilter").selectAll("*").remove();
+
+  d3.select("#columnFilter")
+    .selectAll(".columnCheckBox")
+    .data(sankey.columns())
+    .enter().append("span")
+    .each(function(d) {
+      d3.select(this).append("input")
+        .attr("type","checkbox")
+        .attr("checked","true")
+        .attr("name","columns")
+        .attr("value",function (d) {return d;})
+        .on("change", toggleColumn);
+      d3.select(this).append("span")
+        .text(function(d) {return "Column " + d.toString();});
+    });
+}
+
+function appendColumnNumber(item, column) {
+  return item + "_" + column.toString();
+}
+
+function stripColumnNumber(item) {
+  return item.split('_').slice(0,-1).join('');
+}
+
+function columnNumber(item) {
+  return +item.split('_').slice(-1);
+}
+
+function extractNodesAndLinks(columnFilter) {
+  var node_list = d3.set(rows.reduce(function (a,b) {
+			return a.concat(b.slice(0,-1).map(appendColumnNumber));
+		}, [])).values();
+
+  node_list = node_list.filter(function (d) {
+    return columnFilter(columnNumber(d));
+  })
+
+	nodes = node_list.map(function (d) {return {name: d};});
+
+	var link_map = d3.map();
+
+	rows.forEach(function (a) {
+			a.slice(0,-2).forEach(function (current,i) {
+          if (!columnFilter(i)) return;
+          var nextCol = i+1;
+          while (!columnFilter(nextCol)) {
+            nextCol++;
+            if (nextCol >= a.length-1) return;
+          }
+					link = {
+						source: node_list.indexOf(appendColumnNumber(a[i],i)),
+						target: node_list.indexOf(appendColumnNumber(a[nextCol],nextCol)),
+						value: +a.slice(-1)[0]};
+					if (isNaN(link.value))
+					{
+						link.value = 1;
+					}
+					hash = link.source.toString()+"_"+link.target.toString();
+					if (link_map.has(hash))
+					{
+						link.value += link_map.get(hash).value;
+					}
+					link_map.set(hash, link);
+				});
+		});
+
+	links = link_map.values();
+
+  nodes = nodes.map(function(d) {
+    d.name = stripColumnNumber(d.name);
+    return d;
+  });
+}
+
+function softLayout() {
+  // figure out the mapping between the saved columns (all of them)
+  // and the specified columns so we can restore properly
+  var colMap = new Array(restorer.columns());
+  displayColumns.values().sort(function(a,b) {
+      return a-b;
+    }).forEach(function(c,i){
+      colMap[i] = c;
+    });
+
+  extractNodesAndLinks(function (i) {
+    return displayColumns.has(i);
+  });
+
+  sankey.nodes(nodes).links(links);
+
+  sankey.assignColumns();
+
+  restorer.restore(sankey, colMap);
+
+  // now do a soft layout
+  sankey.softLayout();
+  render();
+}
+
+var positionRestorer = function() {
+  var positionRestorer = {};
+
+  var positions, columns;
+
+  positionRestorer.columns = function() {
+    return columns;
+  };
+
+  positionRestorer.save = function(sankey) {
+    positions = d3.map();
+
+    sankey.nodes().forEach(function(d) {
+        positions.set(appendColumnNumber(d.name,d.col),d.y);
+      });
+
+    columns = sankey.columns();
+
+    return positionRestorer;
+  };
+
+  positionRestorer.restore = function(sankey, colMap) {
+    // now reset positions... blah
+    sankey.nodes().forEach(function(d) {
+      d.y = positions.get(appendColumnNumber(d.name,colMap[d.col]))
+    });
+    return positionRestorer;
+  };
+
+  return positionRestorer;
+};
+</script>
+</body>
+</html>
