@@ -1,7 +1,7 @@
 # sankey
 App for displaying CSV files as a Sankey plot.
 
-##Usage
+###Usage
 It allows opening CSV files of the format:
 
     "Item A","Item A","Item A",10.0
@@ -11,3 +11,7 @@ It allows opening CSV files of the format:
 
 Data in the columns is independent, so if a name exists in one column it will
 correspond to its own data item in that column.
+
+###Demo
+
+http://wiggzz.github.io/sankey
